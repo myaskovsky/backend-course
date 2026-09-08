@@ -1,11 +1,16 @@
 export interface Config {
   PORT: number;
-  NODE_ENV: 'development' | 'production';
+  NODE_ENV: 'development' | 'production' | 'test';
 
   /**
    * Cookie secret
    */
   COOKIE_SECRET: string;
+
+  /**
+   * Comma-separated list of trusted CORS origins.
+   */
+  CORS_ORIGINS?: string;
 
   /**
    * Health check options

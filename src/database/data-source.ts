@@ -28,4 +28,5 @@ export const dataSource = new DataSource({
   logging: process.env.POSTGRES_LOGGING === 'true',
 });
 
-export default dataSource;
+// NOTE: Only ONE DataSource export is allowed here — the TypeORM CLI rejects a
+// file that exports the instance more than once (named + default).
