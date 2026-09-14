@@ -1,0 +1,15 @@
+---
+description: Product domain and locked NestJS stack for the file conversion backend
+alwaysApply: true
+---
+
+# File conversion backend
+
+Build a **monolith** that converts files between formats. Read [README.md](README.md) first.
+
+- HTTP kernel is **Fastify** (`NestFastifyApplication`, `app.register(...)`). Do not use Express.
+- Imports use `@/` → `src/` (e.g. `@/core/config/config.service`). Never `@config/...`.
+- Infrastructure lives in `src/core/`. Features live in `src/modules/` and must be imported in `src/core/app/app.module.ts`.
+- **TypeORM**, not Prisma. **Joi + class-validator**, not Zod. **Local disk** for files, not S3/MinIO.
+- SMTP: turboSMTP or a compatible SMTP client when adding email.
+- Fetch NestJS 11, Fastify, TypeORM 0.3, class-validator, and Terminus/Throttler APIs via **Context7 MCP**. Do not invent APIs from training data.

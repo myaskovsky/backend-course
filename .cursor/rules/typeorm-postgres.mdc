@@ -1,0 +1,19 @@
+---
+description: TypeORM entities, repositories, transactions, and migrations
+globs: "**/*.{entity,migration}.ts,src/database/**,src/core/database/**"
+alwaysApply: false
+---
+
+# TypeORM + PostgreSQL
+
+- Name entities `*.entity.ts` under `src/` (auto-loaded). Register them with `TypeOrmModule.forFeature` in the feature module.
+- Inject with `@InjectRepository(Entity)`. Wrap multi-step writes in `@Transactional()` from `typeorm-transactional`.
+- Schema changes go through migrations in `src/database/migrations/*.migration.ts`. Keep `POSTGRES_SYNCHRONIZE=false`.
+- CLI DataSource is `src/database/data-source.ts`. Runtime DataSource is `DatabaseModule`.
+
+```bash
+npm run migration:generate   # from entity changes
+npm run migration:run
+```
+
+Do not add Prisma, synchronize in production, or put SQL schema edits outside migrations.
