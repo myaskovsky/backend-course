@@ -18,6 +18,16 @@ export const configValidationSchema = Joi.object<Config>({
     ),
 
   /**
+   * SMTP options (optional — logs OTP when unset)
+   */
+  SMTP_HOST: Joi.string().optional(),
+  SMTP_PORT: Joi.number().port().optional(),
+  SMTP_SECURE: Joi.boolean().optional().default(false),
+  SMTP_USER: Joi.string().optional(),
+  SMTP_PASSWORD: Joi.string().optional(),
+  SMTP_FROM: Joi.string().optional().default('no-reply@example.com'),
+
+  /**
    * Health check options
    */
   HEALTH_CHECK_ENABLED: Joi.boolean().optional().default(false),

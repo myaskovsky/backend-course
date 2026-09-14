@@ -13,6 +13,17 @@ export interface Config {
   CORS_ORIGINS?: string;
 
   /**
+   * SMTP (turboSMTP or compatible) for OTP emails. Optional — when unset,
+   * MailService logs the OTP instead of sending (dev convenience).
+   */
+  SMTP_HOST?: string;
+  SMTP_PORT?: number;
+  SMTP_SECURE?: boolean;
+  SMTP_USER?: string;
+  SMTP_PASSWORD?: string;
+  SMTP_FROM?: string;
+
+  /**
    * Health check options
    */
   HEALTH_CHECK_ENABLED?: boolean;
