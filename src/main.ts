@@ -1,9 +1,16 @@
 import { NestFactory } from '@nestjs/core';
-import { FastifyAdapter, NestFastifyApplication } from '@nestjs/platform-fastify';
+import {
+  FastifyAdapter,
+  NestFastifyApplication,
+} from '@nestjs/platform-fastify';
 import compression from '@fastify/compress';
 import fastifyCookie from '@fastify/cookie';
 import { ValidationPipe } from '@nestjs/common';
-import { initializeTransactionalContext, StorageDriver } from 'typeorm-transactional';
+import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
+import {
+  initializeTransactionalContext,
+  StorageDriver,
+} from 'typeorm-transactional';
 
 import { AppModule } from './core/app/app.module';
 import { ConfigService } from '@/core/config/config.service';
@@ -13,7 +20,7 @@ async function bootstrap() {
 
   const app = await NestFactory.create<NestFastifyApplication>(
     AppModule,
-    new FastifyAdapter()
+    new FastifyAdapter(),
   );
 
   await app.register(compression);
@@ -21,30 +28,43 @@ async function bootstrap() {
   app.useGlobalPipes(
     new ValidationPipe({
       whitelist: true,
+      transform: true,
+      transformOptions: { enableImplicitConversion: true },
     }),
   );
 
+  const configService = app.get(ConfigService);
+
   app.enableCors({
-    origin: [
-      'http://localhost:5174',
-      'http://localhost:4200',
-      'http://localhost:8080',
-    ],
+    origin: configService
+      .get('CORS_ORIGINS')
+      .split(',')
+      .map((o) => o.trim())
+      .filter(Boolean),
     methods: 'GET,HEAD,PUT,PATCH,POST,DELETE',
     credentials: true,
     preflightContinue: false,
     optionsSuccessStatus: 204,
   });
 
-  const configService = app.get(ConfigService);
-
   await app.register(fastifyCookie, {
     secret: configService.get('COOKIE_SECRET'),
   });
+
+  const swaggerConfig = new DocumentBuilder()
+    .setTitle('File Converter API')
+    .setDescription(
+      'User management: registration, auth (JWT cookies), RBAC, users CRUD',
+    )
+    .setVersion('1.0')
+    .addCookieAuth('access_token')
+    .build();
+  const document = SwaggerModule.createDocument(app, swaggerConfig);
+  SwaggerModule.setup('docs', app, document);
 
   const port = configService.get('PORT');
 
   await app.listen(port);
 }
 
-bootstrap();
+void bootstrap();

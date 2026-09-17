@@ -8,9 +8,34 @@ export interface Config {
   COOKIE_SECRET: string;
 
   /**
+   * Cookie options for auth tokens
+   */
+  COOKIE_SECURE?: boolean;
+  COOKIE_SAMESITE?: 'lax' | 'strict' | 'none';
+  COOKIE_DOMAIN?: string;
+
+  /**
    * Comma-separated list of trusted CORS origins.
    */
   CORS_ORIGINS?: string;
+
+  /**
+   * JWT options (secrets and TTL in seconds)
+   */
+  JWT_ACCESS_SECRET: string;
+  JWT_REFRESH_SECRET: string;
+  JWT_ACCESS_TTL?: number;
+  JWT_REFRESH_TTL?: number;
+
+  /**
+   * Email confirmation feature flags (admin-toggleable per scenario).
+   * Actual OTP delivery is wired in Phase 6; until then, enabled flows are stubbed.
+   */
+  CONFIRM_REGISTRATION_ENABLED?: boolean;
+  CONFIRM_LOGIN_ENABLED?: boolean;
+  CONFIRM_EMAIL_CHANGE_ENABLED?: boolean;
+  CONFIRM_SELF_DELETE_ENABLED?: boolean;
+  CONFIRM_PASSWORD_RECOVERY?: boolean;
 
   /**
    * SMTP (turboSMTP or compatible) for OTP emails. Optional — when unset,

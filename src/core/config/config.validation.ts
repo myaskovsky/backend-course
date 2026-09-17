@@ -11,11 +11,38 @@ export const configValidationSchema = Joi.object<Config>({
    */
   COOKIE_SECRET: Joi.string().required(),
 
+  /**
+   * Cookie options for auth tokens
+   */
+  COOKIE_SECURE: Joi.boolean().optional().default(false),
+  COOKIE_SAMESITE: Joi.string()
+    .valid('lax', 'strict', 'none')
+    .optional()
+    .default('lax'),
+  COOKIE_DOMAIN: Joi.string().optional(),
+
   CORS_ORIGINS: Joi.string()
     .optional()
     .default(
       'http://localhost:5174,http://localhost:4200,http://localhost:8080',
     ),
+
+  /**
+   * JWT options (secrets and TTL in seconds)
+   */
+  JWT_ACCESS_SECRET: Joi.string().required(),
+  JWT_REFRESH_SECRET: Joi.string().required(),
+  JWT_ACCESS_TTL: Joi.number().optional().default(900),
+  JWT_REFRESH_TTL: Joi.number().optional().default(2592000),
+
+  /**
+   * Email confirmation feature flags (admin-toggleable per scenario)
+   */
+  CONFIRM_REGISTRATION_ENABLED: Joi.boolean().optional().default(false),
+  CONFIRM_LOGIN_ENABLED: Joi.boolean().optional().default(false),
+  CONFIRM_EMAIL_CHANGE_ENABLED: Joi.boolean().optional().default(true),
+  CONFIRM_SELF_DELETE_ENABLED: Joi.boolean().optional().default(true),
+  CONFIRM_PASSWORD_RECOVERY: Joi.boolean().optional().default(true),
 
   /**
    * SMTP options (optional — logs OTP when unset)
