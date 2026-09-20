@@ -45,6 +45,12 @@ export const configValidationSchema = Joi.object<Config>({
   CONFIRM_PASSWORD_RECOVERY: Joi.boolean().optional().default(true),
 
   /**
+   * Initial admin seeded by the RBAC migration
+   */
+  ADMIN_EMAIL: Joi.string().email().optional(),
+  ADMIN_PASSWORD: Joi.string().optional(),
+
+  /**
    * SMTP options (optional — logs OTP when unset)
    */
   SMTP_HOST: Joi.string().optional(),

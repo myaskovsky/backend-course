@@ -38,6 +38,13 @@ export interface Config {
   CONFIRM_PASSWORD_RECOVERY?: boolean;
 
   /**
+   * Initial admin seeded by the RBAC migration (read via process.env at
+   * migration time). Optional — falls back to documented defaults.
+   */
+  ADMIN_EMAIL?: string;
+  ADMIN_PASSWORD?: string;
+
+  /**
    * SMTP (turboSMTP or compatible) for OTP emails. Optional — when unset,
    * MailService logs the OTP instead of sending (dev convenience).
    */
