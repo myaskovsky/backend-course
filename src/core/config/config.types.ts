@@ -67,6 +67,22 @@ export interface Config {
   THROTTLE_GLOBAL_LIMIT?: number;
 
   /**
+   * Text-format conversion options.
+   *
+   * Per-source-format upload size limits (bytes, admin-configured). The Fastify
+   * multipart plugin caps uploads at the largest of these; the finer per-format
+   * check runs in ConversionsService once the source format is known.
+   */
+  CONVERT_MAX_SIZE_CSV?: number;
+  CONVERT_MAX_SIZE_JSON?: number;
+  CONVERT_MAX_SIZE_XML?: number;
+  CONVERT_MAX_SIZE_YAML?: number;
+  /** Conversion timeout in milliseconds. */
+  CONVERT_TIMEOUT_MS?: number;
+  /** Max nesting depth of the intermediate representation (anti-resource-attack). */
+  CONVERT_MAX_DEPTH?: number;
+
+  /**
    * PostgreSQL database options
    */
   POSTGRES_HOST: string;

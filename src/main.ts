@@ -5,6 +5,7 @@ import {
 } from '@nestjs/platform-fastify';
 import compression from '@fastify/compress';
 import fastifyCookie from '@fastify/cookie';
+import fastifyMultipart from '@fastify/multipart';
 import { ValidationPipe } from '@nestjs/common';
 import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
 import {
@@ -49,6 +50,19 @@ async function bootstrap() {
 
   await app.register(fastifyCookie, {
     secret: configService.get('COOKIE_SECRET'),
+  });
+
+  // File uploads for the conversion feature. The outer cap is the largest
+  // per-source-format limit; ConversionsService enforces the finer per-format
+  // limit once the source format is known.
+  const maxUploadBytes = Math.max(
+    Number(configService.get('CONVERT_MAX_SIZE_CSV')),
+    Number(configService.get('CONVERT_MAX_SIZE_JSON')),
+    Number(configService.get('CONVERT_MAX_SIZE_XML')),
+    Number(configService.get('CONVERT_MAX_SIZE_YAML')),
+  );
+  await app.register(fastifyMultipart, {
+    limits: { files: 1, fileSize: maxUploadBytes },
   });
 
   const swaggerConfig = new DocumentBuilder()

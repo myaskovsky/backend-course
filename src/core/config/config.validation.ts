@@ -72,6 +72,17 @@ export const configValidationSchema = Joi.object<Config>({
   THROTTLE_GLOBAL_LIMIT: Joi.number().optional().default(10),
 
   /**
+   * Text-format conversion options (per-format upload limits in bytes,
+   * conversion timeout, and max IR nesting depth)
+   */
+  CONVERT_MAX_SIZE_CSV: Joi.number().optional().default(5242880),
+  CONVERT_MAX_SIZE_JSON: Joi.number().optional().default(5242880),
+  CONVERT_MAX_SIZE_XML: Joi.number().optional().default(5242880),
+  CONVERT_MAX_SIZE_YAML: Joi.number().optional().default(5242880),
+  CONVERT_TIMEOUT_MS: Joi.number().optional().default(30000),
+  CONVERT_MAX_DEPTH: Joi.number().optional().default(100),
+
+  /**
    * PostgreSQL database options
    */
   POSTGRES_HOST: Joi.string().hostname().required(),
