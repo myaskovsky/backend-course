@@ -83,6 +83,20 @@ export interface Config {
   CONVERT_MAX_DEPTH?: number;
 
   /**
+   * Transformation result storage & history retention.
+   *
+   * STORAGE_DIR — base directory on local disk for saved result files.
+   * CONVERT_MAX_SAVE_SIZE — max bytes of a result file that may be persisted
+   *   (larger results are returned but not saved).
+   * HISTORY_RETENTION_DAYS — lifetime of a history record and its saved file.
+   * HISTORY_CLEANUP_INTERVAL_MS — how often the background cleanup job runs.
+   */
+  STORAGE_DIR?: string;
+  CONVERT_MAX_SAVE_SIZE?: number;
+  HISTORY_RETENTION_DAYS?: number;
+  HISTORY_CLEANUP_INTERVAL_MS?: number;
+
+  /**
    * PostgreSQL database options
    */
   POSTGRES_HOST: string;

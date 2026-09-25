@@ -83,6 +83,14 @@ export const configValidationSchema = Joi.object<Config>({
   CONVERT_MAX_DEPTH: Joi.number().optional().default(100),
 
   /**
+   * Transformation result storage & history retention
+   */
+  STORAGE_DIR: Joi.string().optional().default('./storage/transformations'),
+  CONVERT_MAX_SAVE_SIZE: Joi.number().optional().default(10485760),
+  HISTORY_RETENTION_DAYS: Joi.number().optional().default(90),
+  HISTORY_CLEANUP_INTERVAL_MS: Joi.number().optional().default(3600000),
+
+  /**
    * PostgreSQL database options
    */
   POSTGRES_HOST: Joi.string().hostname().required(),
