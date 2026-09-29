@@ -139,4 +139,230 @@ describe('RbacAdminService', () => {
       );
     });
   });
+  describe('roles (more)', () => {
+    it('lists roles from the repository', async () => {
+      rolesRepo.find.mockResolvedValue([{ id: 'r1' }]);
+      await expect(service.listRoles()).resolves.toEqual([{ id: 'r1' }]);
+    });
+
+    it('stores a null description when none is provided', async () => {
+      rolesRepo.findOne.mockResolvedValue(null);
+      await service.createRole({ name: 'editor' });
+      expect(rolesRepo.create).toHaveBeenCalledWith({
+        name: 'editor',
+        description: null,
+      });
+    });
+
+    it('updates name and description and reloads', async () => {
+      rolesRepo.findOne
+        .mockResolvedValueOnce({ id: 'r1', name: 'old', description: null })
+        .mockResolvedValueOnce(null);
+      const saved = await service.updateRole('r1', {
+        name: 'new',
+        description: 'desc',
+      });
+      expect(saved).toMatchObject({
+        id: 'r1',
+        name: 'new',
+        description: 'desc',
+      });
+      expect(rbac.reload).toHaveBeenCalled();
+    });
+
+    it('does not check for conflicts when the name is unchanged', async () => {
+      rolesRepo.findOne.mockResolvedValueOnce({ id: 'r1', name: 'same' });
+      await service.updateRole('r1', { name: 'same' });
+      expect(rolesRepo.findOne).toHaveBeenCalledTimes(1);
+      expect(rolesRepo.save).toHaveBeenCalledWith(
+        expect.objectContaining({ name: 'same' }),
+      );
+    });
+
+    it('keeps the description when it is not provided', async () => {
+      rolesRepo.findOne.mockResolvedValueOnce({
+        id: 'r1',
+        name: 'n',
+        description: 'keep',
+      });
+      await service.updateRole('r1', {});
+      expect(rolesRepo.save).toHaveBeenCalledWith(
+        expect.objectContaining({ description: 'keep' }),
+      );
+    });
+
+    it('rejects renaming a role to an existing name (409)', async () => {
+      rolesRepo.findOne
+        .mockResolvedValueOnce({ id: 'r1', name: 'old' })
+        .mockResolvedValueOnce({ id: 'r2', name: 'taken' });
+      await expect(
+        service.updateRole('r1', { name: 'taken' }),
+      ).rejects.toBeInstanceOf(ConflictException);
+      expect(rolesRepo.save).not.toHaveBeenCalled();
+      expect(rbac.reload).not.toHaveBeenCalled();
+    });
+
+    it('404 when deleting a missing role', async () => {
+      rolesRepo.findOne.mockResolvedValue(null);
+      await expect(service.deleteRole('missing')).rejects.toBeInstanceOf(
+        NotFoundException,
+      );
+      expect(rolesRepo.delete).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('permissions (more)', () => {
+    it('lists permissions', async () => {
+      permsRepo.find.mockResolvedValue([{ id: 'p1' }]);
+      await expect(service.listPermissions()).resolves.toEqual([{ id: 'p1' }]);
+    });
+
+    it('creates a permission and reloads', async () => {
+      permsRepo.findOne.mockResolvedValue(null);
+      const created = await service.createPermission({
+        name: 'files',
+        actions: ['read'],
+      });
+      expect(permsRepo.create).toHaveBeenCalledWith({
+        name: 'files',
+        actions: ['read'],
+      });
+      expect(created.id).toBe('new-id');
+      expect(rbac.reload).toHaveBeenCalled();
+    });
+
+    it('rejects a duplicate permission name (409)', async () => {
+      permsRepo.findOne.mockResolvedValue({ id: 'p1', name: 'files' });
+      await expect(
+        service.createPermission({ name: 'files', actions: ['read'] }),
+      ).rejects.toBeInstanceOf(ConflictException);
+      expect(permsRepo.save).not.toHaveBeenCalled();
+    });
+
+    it('404 when updating a missing permission', async () => {
+      permsRepo.findOne.mockResolvedValue(null);
+      await expect(
+        service.updatePermission('missing', { name: 'x' }),
+      ).rejects.toBeInstanceOf(NotFoundException);
+    });
+
+    it('rejects renaming a permission to an existing name (409)', async () => {
+      permsRepo.findOne
+        .mockResolvedValueOnce({ id: 'p1', name: 'old' })
+        .mockResolvedValueOnce({ id: 'p2', name: 'taken' });
+      await expect(
+        service.updatePermission('p1', { name: 'taken' }),
+      ).rejects.toBeInstanceOf(ConflictException);
+    });
+
+    it('updates name and actions and reloads', async () => {
+      permsRepo.findOne
+        .mockResolvedValueOnce({ id: 'p1', name: 'old', actions: ['read'] })
+        .mockResolvedValueOnce(null);
+      const saved = await service.updatePermission('p1', {
+        name: 'new',
+        actions: ['read', 'update'],
+      });
+      expect(saved).toMatchObject({ name: 'new', actions: ['read', 'update'] });
+      expect(rbac.reload).toHaveBeenCalled();
+    });
+
+    it('keeps actions when not provided', async () => {
+      permsRepo.findOne.mockResolvedValueOnce({
+        id: 'p1',
+        name: 'n',
+        actions: ['read'],
+      });
+      await service.updatePermission('p1', {});
+      expect(permsRepo.save).toHaveBeenCalledWith(
+        expect.objectContaining({ name: 'n', actions: ['read'] }),
+      );
+    });
+
+    it('404 when deleting a missing permission', async () => {
+      permsRepo.findOne.mockResolvedValue(null);
+      await expect(service.deletePermission('missing')).rejects.toBeInstanceOf(
+        NotFoundException,
+      );
+    });
+
+    it('deletes a permission with no grants and reloads', async () => {
+      permsRepo.findOne.mockResolvedValue({ id: 'p1' });
+      grantsRepo.count.mockResolvedValue(0);
+      await service.deletePermission('p1');
+      expect(grantsRepo.count).toHaveBeenCalledWith({
+        where: { permissionId: 'p1' },
+      });
+      expect(permsRepo.delete).toHaveBeenCalledWith('p1');
+      expect(rbac.reload).toHaveBeenCalled();
+    });
+  });
+
+  describe('grants (more)', () => {
+    it('lists grants', async () => {
+      grantsRepo.find.mockResolvedValue([{ id: 'g1' }]);
+      await expect(service.listGrants()).resolves.toEqual([{ id: 'g1' }]);
+    });
+
+    it('404 when the permission is missing', async () => {
+      rolesRepo.findOne.mockResolvedValue({ id: 'r1' });
+      permsRepo.findOne.mockResolvedValue(null);
+      await expect(
+        service.createGrant({ roleId: 'r1', permissionId: 'p1' }),
+      ).rejects.toThrow('Permission not found');
+    });
+
+    it('keeps explicit actions on create', async () => {
+      rolesRepo.findOne.mockResolvedValue({ id: 'r1' });
+      permsRepo.findOne.mockResolvedValue({ id: 'p1' });
+      grantsRepo.findOne.mockResolvedValue(null);
+      await service.createGrant({
+        roleId: 'r1',
+        permissionId: 'p1',
+        actions: ['read'],
+      });
+      expect(grantsRepo.create).toHaveBeenCalledWith({
+        roleId: 'r1',
+        permissionId: 'p1',
+        actions: ['read'],
+      });
+    });
+
+    it('404 when updating a missing grant', async () => {
+      grantsRepo.findOne.mockResolvedValue(null);
+      await expect(
+        service.updateGrant('missing', { actions: ['read'] }),
+      ).rejects.toBeInstanceOf(NotFoundException);
+    });
+
+    it('updates grant actions, normalising empty to null', async () => {
+      grantsRepo.findOne.mockResolvedValue({ id: 'g1', actions: ['read'] });
+      const saved = await service.updateGrant('g1', { actions: [] });
+      expect(saved.actions).toBeNull();
+      expect(rbac.reload).toHaveBeenCalled();
+    });
+
+    it('updates grant actions to the given list', async () => {
+      grantsRepo.findOne.mockResolvedValue({ id: 'g1', actions: null });
+      const saved = await service.updateGrant('g1', {
+        actions: ['read', 'delete'],
+      });
+      expect(saved.actions).toEqual(['read', 'delete']);
+    });
+
+    it('404 when deleting a missing grant', async () => {
+      grantsRepo.findOne.mockResolvedValue(null);
+      await expect(service.deleteGrant('missing')).rejects.toBeInstanceOf(
+        NotFoundException,
+      );
+      expect(grantsRepo.delete).not.toHaveBeenCalled();
+    });
+
+    it('deletes a grant and reloads', async () => {
+      grantsRepo.findOne.mockResolvedValue({ id: 'g1' });
+      await service.deleteGrant('g1');
+      expect(grantsRepo.delete).toHaveBeenCalledWith('g1');
+      expect(rbac.reload).toHaveBeenCalled();
+    });
+  });
 });

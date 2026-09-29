@@ -1,9 +1,11 @@
+import { randomUUID } from 'node:crypto';
+
 import { Injectable } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 
 import { ConfigService } from '@/core/config/config.service';
 
-import { JwtPayload } from './auth.constants';
+import { JwtPayload, TokenType } from './auth.constants';
 
 export interface TokenPair {
   accessToken: string;
@@ -13,12 +15,12 @@ export interface TokenPair {
 export interface TokenSubject {
   userId: string;
   email: string;
-  roles?: string[];
 }
 
 /**
  * Signs and verifies the access/refresh JWT pair. Secrets and TTLs are read
- * per-call from config so the two token types use independent keys.
+ * per-call from config so the two token types use independent keys. Every
+ * token carries a unique `jti` so it can be revoked individually.
  */
 @Injectable()
 export class TokensService {
@@ -29,19 +31,8 @@ export class TokensService {
 
   async issueTokenPair(subject: TokenSubject): Promise<TokenPair> {
     const [accessToken, refreshToken] = await Promise.all([
-      this.jwtService.signAsync(
-        {
-          sub: subject.userId,
-          email: subject.email,
-          type: 'access',
-          roles: subject.roles ?? [],
-        },
-        { secret: this.accessSecret(), expiresIn: this.accessTtl() },
-      ),
-      this.jwtService.signAsync(
-        { sub: subject.userId, email: subject.email, type: 'refresh' },
-        { secret: this.refreshSecret(), expiresIn: this.refreshTtl() },
-      ),
+      this.sign(subject, 'access', this.accessSecret(), this.accessTtl()),
+      this.sign(subject, 'refresh', this.refreshSecret(), this.refreshTtl()),
     ]);
 
     return { accessToken, refreshToken };
@@ -65,6 +56,26 @@ export class TokensService {
 
   refreshTtl(): number {
     return Number(this.configService.get('JWT_REFRESH_TTL'));
+  }
+
+  private sign(
+    subject: TokenSubject,
+    type: TokenType,
+    secret: string,
+    expiresIn: number,
+  ): Promise<string> {
+    return this.jwtService.signAsync(
+      {
+        sub: subject.userId,
+        email: subject.email,
+        type,
+        // Millisecond-precision iat (RFC 7519 NumericDate may be fractional):
+        // lets a token issued right after `users.tokensValidAfter` be told
+        // apart from one issued in the same second before it.
+        iat: Date.now() / 1000,
+      },
+      { secret, expiresIn, jwtid: randomUUID() },
+    );
   }
 
   private accessSecret(): string {

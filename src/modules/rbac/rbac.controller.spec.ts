@@ -48,4 +48,31 @@ describe('RbacController', () => {
     });
     expect(admin.deleteGrant).toHaveBeenCalledWith('g1');
   });
+  it('delegates permission and grant updates with id and dto', async () => {
+    await controller.updatePermission('p1', { actions: ['read'] });
+    await controller.updateGrant('g1', { actions: ['update'] });
+    expect(admin.updatePermission).toHaveBeenCalledWith('p1', {
+      actions: ['read'],
+    });
+    expect(admin.updateGrant).toHaveBeenCalledWith('g1', {
+      actions: ['update'],
+    });
+  });
+
+  it('returns what the admin service resolves', async () => {
+    admin.listRoles.mockResolvedValue([{ id: 'r1' }] as never);
+    admin.listPermissions.mockResolvedValue([{ id: 'p1' }] as never);
+    admin.listGrants.mockResolvedValue([{ id: 'g1' }] as never);
+    await expect(controller.listRoles()).resolves.toEqual([{ id: 'r1' }]);
+    await expect(controller.listPermissions()).resolves.toEqual([{ id: 'p1' }]);
+    await expect(controller.listGrants()).resolves.toEqual([{ id: 'g1' }]);
+    expect(admin.listPermissions).toHaveBeenCalled();
+    expect(admin.listGrants).toHaveBeenCalled();
+  });
+
+  it('propagates service errors', async () => {
+    admin.deletePermission.mockRejectedValue(new Error('conflict'));
+    await expect(controller.deletePermission('p1')).rejects.toThrow('conflict');
+    expect(admin.deletePermission).toHaveBeenCalledWith('p1');
+  });
 });

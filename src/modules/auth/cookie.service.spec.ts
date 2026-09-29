@@ -44,8 +44,9 @@ describe('CookieService', () => {
       sameSite: 'lax',
       path: '/',
     });
+    // Scoped to /auth so both /auth/refresh and /auth/logout receive it.
     expect(refresh?.[2]).toMatchObject({
-      path: '/auth/refresh',
+      path: '/auth',
       maxAge: 2592000,
     });
   });
@@ -53,7 +54,12 @@ describe('CookieService', () => {
   it('clears both auth cookies', () => {
     const { reply, clearCookie } = makeReply();
     service.clearAuthCookies(reply);
-    const names = clearCookie.mock.calls.map((c) => c[0]);
-    expect(names).toEqual([ACCESS_TOKEN_COOKIE, REFRESH_TOKEN_COOKIE]);
+    const cleared = clearCookie.mock.calls.map((c) => [c[0], c[1].path]);
+    expect(cleared).toEqual([
+      [ACCESS_TOKEN_COOKIE, '/'],
+      [REFRESH_TOKEN_COOKIE, '/auth'],
+      // legacy scope from before the path change
+      [REFRESH_TOKEN_COOKIE, '/auth/refresh'],
+    ]);
   });
 });

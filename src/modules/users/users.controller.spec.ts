@@ -1,7 +1,12 @@
-import { ForbiddenException } from '@nestjs/common';
+import {
+  ConflictException,
+  ForbiddenException,
+  NotFoundException,
+} from '@nestjs/common';
 
 import { RequestUser } from '@/modules/auth/auth.constants';
 import { ChallengeService } from '@/modules/auth/challenge.service';
+import { ChallengeType } from '@/modules/auth/entities/email-challenge.entity';
 import { ConfigService } from '@/core/config/config.service';
 import { RbacService } from '@/modules/rbac/rbac.service';
 
@@ -13,7 +18,12 @@ describe('UsersController', () => {
   let usersService: jest.Mocked<
     Pick<
       UsersService,
-      'getProfileOrThrow' | 'updateProfile' | 'softDelete' | 'findById'
+      | 'getProfileOrThrow'
+      | 'updateProfile'
+      | 'softDelete'
+      | 'findById'
+      | 'findByEmail'
+      | 'changeEmail'
     >
   >;
   let rbac: jest.Mocked<Pick<RbacService, 'check'>>;
@@ -43,6 +53,8 @@ describe('UsersController', () => {
       findById: jest
         .fn()
         .mockResolvedValue({ id: 'self-id', email: 'self@example.com' }),
+      findByEmail: jest.fn().mockResolvedValue(null),
+      changeEmail: jest.fn().mockResolvedValue(undefined),
     };
     rbac = { check: jest.fn().mockReturnValue(false) };
     challenge = {
@@ -161,6 +173,144 @@ describe('UsersController', () => {
           self,
         ),
       ).rejects.toBeInstanceOf(ForbiddenException);
+    });
+  });
+  describe('update (more)', () => {
+    it('forbids a non-admin from updating another user', async () => {
+      await expect(
+        controller.update(otherId, { displayName: 'x' }, self),
+      ).rejects.toBeInstanceOf(ForbiddenException);
+      expect(rbac.check).toHaveBeenCalledWith(['user'], 'users', 'update');
+      expect(usersService.updateProfile).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('initiateEmailChange', () => {
+    it('forbids changing the email of another account', async () => {
+      await expect(
+        controller.initiateEmailChange(
+          otherId,
+          { newEmail: 'new@example.com' },
+          self,
+        ),
+      ).rejects.toBeInstanceOf(ForbiddenException);
+      expect(challenge.issue).not.toHaveBeenCalled();
+    });
+
+    it('rejects an email already in use (409)', async () => {
+      usersService.findByEmail.mockResolvedValue({ id: otherId } as never);
+      await expect(
+        controller.initiateEmailChange(
+          'self-id',
+          { newEmail: 'taken@example.com' },
+          self,
+        ),
+      ).rejects.toBeInstanceOf(ConflictException);
+      expect(challenge.issue).not.toHaveBeenCalled();
+    });
+
+    it('normalises the new email and issues an EMAIL_CHANGE challenge', async () => {
+      const res = await controller.initiateEmailChange(
+        'self-id',
+        { newEmail: '  New@Example.COM ' },
+        self,
+      );
+      expect(usersService.findByEmail).toHaveBeenCalledWith('new@example.com');
+      expect(challenge.issue).toHaveBeenCalledWith({
+        type: ChallengeType.EMAIL_CHANGE,
+        email: 'new@example.com',
+        userId: 'self-id',
+      });
+      expect(res).toEqual({ requiresConfirmation: true, challengeId: 'ch-1' });
+    });
+  });
+
+  describe('confirmEmailChange', () => {
+    const dto = { challengeId: 'ch-1', code: '123456' };
+
+    it('forbids confirming for another account', async () => {
+      await expect(
+        controller.confirmEmailChange(otherId, dto, self),
+      ).rejects.toBeInstanceOf(ForbiddenException);
+      expect(challenge.verifyAndConsume).not.toHaveBeenCalled();
+    });
+
+    it('forbids a challenge issued for a different user', async () => {
+      challenge.verifyAndConsume.mockResolvedValue({
+        userId: otherId,
+        email: 'new@example.com',
+      } as never);
+      await expect(
+        controller.confirmEmailChange('self-id', dto, self),
+      ).rejects.toThrow('Confirmation does not belong to this user');
+      expect(usersService.changeEmail).not.toHaveBeenCalled();
+    });
+
+    it('changes the email to the challenge address on success', async () => {
+      challenge.verifyAndConsume.mockResolvedValue({
+        userId: 'self-id',
+        email: 'new@example.com',
+      } as never);
+      await expect(
+        controller.confirmEmailChange('self-id', dto, self),
+      ).resolves.toEqual({ success: true });
+      expect(challenge.verifyAndConsume).toHaveBeenCalledWith(
+        'ch-1',
+        '123456',
+        ChallengeType.EMAIL_CHANGE,
+      );
+      expect(usersService.changeEmail).toHaveBeenCalledWith(
+        'self-id',
+        'new@example.com',
+      );
+    });
+
+    it('propagates an invalid OTP error from the challenge service', async () => {
+      challenge.verifyAndConsume.mockRejectedValue(new Error('bad code'));
+      await expect(
+        controller.confirmEmailChange('self-id', dto, self),
+      ).rejects.toThrow('bad code');
+      expect(usersService.changeEmail).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('remove (more)', () => {
+    it('404 when the self user no longer exists during self-delete', async () => {
+      usersService.findById.mockResolvedValue(null);
+      await expect(controller.remove('self-id', self)).rejects.toBeInstanceOf(
+        NotFoundException,
+      );
+      expect(challenge.issue).not.toHaveBeenCalled();
+    });
+
+    it('issues the self-delete challenge to the stored email', async () => {
+      await controller.remove('self-id', self);
+      expect(challenge.issue).toHaveBeenCalledWith({
+        type: ChallengeType.SELF_DELETE,
+        email: 'self@example.com',
+        userId: 'self-id',
+      });
+    });
+  });
+
+  describe('confirmSelfDelete (more)', () => {
+    it('forbids a challenge that belongs to a different user', async () => {
+      challenge.verifyAndConsume.mockResolvedValue({
+        userId: otherId,
+      } as never);
+      await expect(
+        controller.confirmSelfDelete(
+          'self-id',
+          { challengeId: 'ch-1', code: '123456' },
+          self,
+        ),
+      ).rejects.toThrow('Confirmation does not belong to this user');
+      expect(challenge.verifyAndConsume).toHaveBeenCalledWith(
+        'ch-1',
+        '123456',
+        ChallengeType.SELF_DELETE,
+      );
+      expect(usersService.softDelete).not.toHaveBeenCalled();
     });
   });
 });

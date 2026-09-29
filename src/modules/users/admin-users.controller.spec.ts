@@ -14,9 +14,13 @@ describe('AdminUsersController', () => {
       sort: UserSortField.CREATED_AT,
       order: SortOrder.DESC,
     };
-    const res = await controller.list(query);
+    const res = await controller.list(query, {
+      userId: 'admin-1',
+      email: 'admin@example.com',
+      roles: ['admin'],
+    });
 
-    expect(usersService.list).toHaveBeenCalledWith(query);
+    expect(usersService.list).toHaveBeenCalledWith(query, 'admin-1');
     expect(res).toEqual({ items: [], nextCursor: null });
   });
 });

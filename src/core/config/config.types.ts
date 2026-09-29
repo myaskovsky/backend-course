@@ -26,10 +26,11 @@ export interface Config {
   JWT_REFRESH_SECRET: string;
   JWT_ACCESS_TTL?: number;
   JWT_REFRESH_TTL?: number;
+  /** How often expired rows are purged from the revoked-token denylist (ms). */
+  REVOKED_TOKENS_CLEANUP_INTERVAL_MS?: number;
 
   /**
    * Email confirmation feature flags (admin-toggleable per scenario).
-   * Actual OTP delivery is wired in Phase 6; until then, enabled flows are stubbed.
    */
   CONFIRM_REGISTRATION_ENABLED?: boolean;
   CONFIRM_LOGIN_ENABLED?: boolean;
@@ -81,6 +82,8 @@ export interface Config {
   CONVERT_TIMEOUT_MS?: number;
   /** Max nesting depth of the intermediate representation (anti-resource-attack). */
   CONVERT_MAX_DEPTH?: number;
+  /** Worker threads that run conversions off the main event loop (0 = CPU count - 1). */
+  CONVERT_WORKER_POOL_SIZE?: number;
 
   /**
    * Transformation result storage & history retention.

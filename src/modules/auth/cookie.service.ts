@@ -7,6 +7,14 @@ import { ACCESS_TOKEN_COOKIE, REFRESH_TOKEN_COOKIE } from './auth.constants';
 import { TokenPair } from './tokens.service';
 
 /**
+ * The refresh cookie is sent to /auth/refresh and /auth/logout only (so logout
+ * can revoke it). It used to be scoped to /auth/refresh; that path is cleared
+ * too so a stale cookie there cannot shadow the current one.
+ */
+const REFRESH_COOKIE_PATH = '/auth';
+const LEGACY_REFRESH_COOKIE_PATH = '/auth/refresh';
+
+/**
  * Centralizes auth-cookie handling (HttpOnly/Secure/SameSite) so controllers
  * stay thin and cookie policy lives in one place.
  */
@@ -21,17 +29,25 @@ export class CookieService {
     });
     reply.setCookie(REFRESH_TOKEN_COOKIE, tokens.refreshToken, {
       ...this.baseOptions(),
-      // scope the refresh cookie to the refresh endpoint only
-      path: '/auth/refresh',
+      path: REFRESH_COOKIE_PATH,
       maxAge: Number(this.configService.get('JWT_REFRESH_TTL')),
     });
+    this.clearLegacyRefreshCookie(reply);
   }
 
   clearAuthCookies(reply: FastifyReply): void {
     reply.clearCookie(ACCESS_TOKEN_COOKIE, { ...this.baseOptions() });
     reply.clearCookie(REFRESH_TOKEN_COOKIE, {
       ...this.baseOptions(),
-      path: '/auth/refresh',
+      path: REFRESH_COOKIE_PATH,
+    });
+    this.clearLegacyRefreshCookie(reply);
+  }
+
+  private clearLegacyRefreshCookie(reply: FastifyReply): void {
+    reply.clearCookie(REFRESH_TOKEN_COOKIE, {
+      ...this.baseOptions(),
+      path: LEGACY_REFRESH_COOKIE_PATH,
     });
   }
 

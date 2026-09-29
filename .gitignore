@@ -57,3 +57,10 @@ pids
 
 # Diagnostic reports (https://nodejs.org/api/report.html)
 report.[0-9]*.[0-9]*.[0-9]*.[0-9]*.json
+
+# Local AI-assistant tooling (kept out of the repository)
+.cursor/
+.claude/
+.mcp.json
+CLAUDE.md
+AGENTS.md

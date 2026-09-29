@@ -26,7 +26,7 @@ import type { FastifyRequest } from 'fastify';
 import type { RequestUser } from '@/modules/auth/auth.constants';
 import { CurrentUser } from '@/modules/auth/decorators/current-user.decorator';
 
-import { ConversionsService } from './conversions.service';
+import { ConversionsService, StagedUpload } from './conversions.service';
 import { ConvertDto } from './dto/convert.dto';
 import { FormatPairDto } from './dto/formats-response.dto';
 
@@ -63,16 +63,18 @@ export class ConversionsController {
       );
     }
 
-    let buffer: Buffer | undefined;
-    let filename: string | undefined;
+    let upload: StagedUpload | undefined;
     let targetFormatRaw: string | undefined;
     let saveRaw: string | undefined;
 
     try {
       for await (const part of rawReq.parts()) {
         if (part.type === 'file') {
-          filename = part.filename;
-          buffer = await part.toBuffer();
+          // Streamed straight to a temp file — never buffered in memory.
+          upload = await this.conversionsService.stageUpload(
+            part.filename,
+            part.file,
+          );
         } else if (part.type === 'field' && typeof part.value === 'string') {
           if (part.fieldname === 'targetFormat') {
             targetFormatRaw = part.value;
@@ -82,6 +84,7 @@ export class ConversionsController {
         }
       }
     } catch (err) {
+      await this.conversionsService.discard(upload);
       if ((err as { code?: string }).code === FILE_TOO_LARGE_CODE) {
         throw new PayloadTooLargeException('File exceeds the size limit');
       }
@@ -90,9 +93,8 @@ export class ConversionsController {
 
     const result = await this.conversionsService.convert({
       userId: actor.userId,
-      filename,
       targetFormatRaw,
-      buffer: buffer ?? Buffer.alloc(0),
+      upload,
       save: saveRaw === 'true',
     });
 

@@ -23,6 +23,7 @@ import {
 } from './dto/password-reset.dto';
 import { RegisterDto } from './dto/register.dto';
 import { PasswordService } from './password.service';
+import { TokenRevocationService } from './token-revocation.service';
 import { TokenPair, TokensService } from './tokens.service';
 
 export interface PublicUser {
@@ -55,6 +56,7 @@ export class AuthService {
     private readonly usersService: UsersService,
     private readonly passwordService: PasswordService,
     private readonly tokensService: TokensService,
+    private readonly tokenRevocation: TokenRevocationService,
     private readonly challengeService: ChallengeService,
     private readonly configService: ConfigService,
   ) {}
@@ -163,7 +165,6 @@ export class AuthService {
     const tokens = await this.tokensService.issueTokenPair({
       userId: user.id,
       email: user.email,
-      roles: [],
     });
     this.logger.log(`User logged in: ${user.id}`);
     return { user: this.toPublicUser(user), tokens };
@@ -189,13 +190,51 @@ export class AuthService {
     if (!user || user.status !== UserStatus.ACTIVE) {
       throw new UnauthorizedException('User is not active');
     }
+    if (this.tokenRevocation.isRevokedForUser(payload, user)) {
+      throw new UnauthorizedException('Refresh token has been revoked');
+    }
 
-    // Rotation: every refresh issues a brand-new pair.
+    // Rotation: the presented refresh token is revoked and a new pair issued.
+    // If it was already revoked, someone is replaying a used token — treat the
+    // whole session family as compromised and revoke everything.
+    const firstUse = await this.tokenRevocation.revoke(payload);
+    if (!firstUse) {
+      await this.usersService.revokeAllSessions(user.id);
+      this.logger.warn(`Refresh token reuse detected for user ${user.id}`);
+      throw new UnauthorizedException('Refresh token has been revoked');
+    }
+
     return this.tokensService.issueTokenPair({
       userId: user.id,
       email: user.email,
-      roles: [],
     });
+  }
+
+  /**
+   * Revokes the presented access and refresh tokens so they stop working
+   * immediately. Invalid/expired tokens are skipped — they are unusable anyway.
+   */
+  async logout(
+    accessToken: string | undefined,
+    refreshToken: string | undefined,
+  ): Promise<void> {
+    const payloads = await Promise.all([
+      accessToken
+        ? this.tryVerify(() => this.tokensService.verifyAccess(accessToken))
+        : null,
+      refreshToken
+        ? this.tryVerify(() => this.tokensService.verifyRefresh(refreshToken))
+        : null,
+    ]);
+    for (const payload of payloads) {
+      if (payload?.jti) {
+        await this.tokenRevocation.revoke(payload);
+      }
+    }
+    const userId = payloads.find((p) => p)?.sub;
+    if (userId) {
+      this.logger.log(`User logged out: ${userId}`);
+    }
   }
 
   /**
@@ -240,9 +279,14 @@ export class AuthService {
   }
 
   /**
-   * Authenticated password change: verifies the current password first.
+   * Authenticated password change: verifies the current password first. All
+   * existing sessions are revoked; a fresh pair is returned so the device that
+   * made the change stays signed in.
    */
-  async changePassword(userId: string, dto: ChangePasswordDto): Promise<void> {
+  async changePassword(
+    userId: string,
+    dto: ChangePasswordDto,
+  ): Promise<TokenPair> {
     const user = await this.usersService.findByIdWithPassword(userId);
     if (!user) {
       throw new UnauthorizedException();
@@ -257,10 +301,24 @@ export class AuthService {
     const passwordHash = await this.passwordService.hash(dto.newPassword);
     await this.usersService.setPassword(userId, passwordHash);
     this.logger.log(`Password changed for user ${userId}`);
+    return this.tokensService.issueTokenPair({
+      userId: user.id,
+      email: user.email,
+    });
   }
 
   resendOtp(challengeId: string): Promise<{ challengeId: string }> {
     return this.challengeService.resend(challengeId);
+  }
+
+  private async tryVerify(
+    verify: () => Promise<JwtPayload>,
+  ): Promise<JwtPayload | null> {
+    try {
+      return await verify();
+    } catch {
+      return null;
+    }
   }
 
   private normalizeEmail(email: string): string {

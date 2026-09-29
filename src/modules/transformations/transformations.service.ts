@@ -30,6 +30,9 @@ export interface DownloadResult {
   filename: string;
 }
 
+const UUID_RE =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
 @Injectable()
 export class TransformationsService {
   private readonly logger = new Logger(TransformationsService.name);
@@ -202,9 +205,13 @@ export class TransformationsService {
       const parsed = JSON.parse(
         Buffer.from(cursor, 'base64url').toString('utf8'),
       ) as { createdAt?: unknown; id?: unknown };
+      // Validate before the values reach SQL: a malformed timestamp or id
+      // would otherwise surface as a database error (500).
       if (
         typeof parsed.createdAt === 'string' &&
-        typeof parsed.id === 'string'
+        !Number.isNaN(Date.parse(parsed.createdAt)) &&
+        typeof parsed.id === 'string' &&
+        UUID_RE.test(parsed.id)
       ) {
         return { createdAt: parsed.createdAt, id: parsed.id };
       }

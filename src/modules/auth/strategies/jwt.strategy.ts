@@ -12,6 +12,7 @@ import {
   JwtPayload,
   RequestUser,
 } from '../auth.constants';
+import { TokenRevocationService } from '../token-revocation.service';
 
 const cookieExtractor = (req: FastifyRequest): string | null => {
   const cookies = (req as FastifyRequest & { cookies?: Record<string, string> })
@@ -24,6 +25,7 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
   constructor(
     configService: ConfigService,
     private readonly usersService: UsersService,
+    private readonly tokenRevocation: TokenRevocationService,
   ) {
     super({
       jwtFromRequest: ExtractJwt.fromExtractors([cookieExtractor]),
@@ -40,6 +42,10 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
     const user = await this.usersService.findByIdWithRoles(payload.sub);
     if (!user || user.status !== UserStatus.ACTIVE) {
       throw new UnauthorizedException('User is not active');
+    }
+
+    if (await this.tokenRevocation.isRevoked(payload, user)) {
+      throw new UnauthorizedException('Token has been revoked');
     }
 
     // Load roles fresh from the DB so role changes apply without re-login.

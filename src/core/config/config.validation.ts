@@ -34,6 +34,11 @@ export const configValidationSchema = Joi.object<Config>({
   JWT_REFRESH_SECRET: Joi.string().required(),
   JWT_ACCESS_TTL: Joi.number().optional().default(900),
   JWT_REFRESH_TTL: Joi.number().optional().default(2592000),
+  REVOKED_TOKENS_CLEANUP_INTERVAL_MS: Joi.number()
+    .integer()
+    .min(1000)
+    .optional()
+    .default(3600000),
 
   /**
    * Email confirmation feature flags (admin-toggleable per scenario)
@@ -81,6 +86,7 @@ export const configValidationSchema = Joi.object<Config>({
   CONVERT_MAX_SIZE_YAML: Joi.number().optional().default(5242880),
   CONVERT_TIMEOUT_MS: Joi.number().optional().default(30000),
   CONVERT_MAX_DEPTH: Joi.number().optional().default(100),
+  CONVERT_WORKER_POOL_SIZE: Joi.number().integer().min(0).optional().default(0),
 
   /**
    * Transformation result storage & history retention

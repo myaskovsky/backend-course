@@ -49,6 +49,13 @@ export class User {
   @Column({ type: 'timestamptz', nullable: true })
   deletedAt: Date | null;
 
+  /**
+   * Every JWT issued before this instant is rejected. Bumped on password
+   * change/reset, deletion and blocking to revoke all sessions at once.
+   */
+  @Column({ type: 'timestamptz', nullable: true })
+  tokensValidAfter: Date | null;
+
   @CreateDateColumn({ type: 'timestamptz' })
   createdAt: Date;
 

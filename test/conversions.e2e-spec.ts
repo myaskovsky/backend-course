@@ -1,158 +1,179 @@
-import { ValidationPipe } from '@nestjs/common';
-import { Test, TestingModule } from '@nestjs/testing';
-import {
-  FastifyAdapter,
-  NestFastifyApplication,
-} from '@nestjs/platform-fastify';
-import fastifyCookie from '@fastify/cookie';
-import fastifyMultipart from '@fastify/multipart';
-import {
-  initializeTransactionalContext,
-  StorageDriver,
-} from 'typeorm-transactional';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 
-import { AppModule } from '../src/core/app/app.module';
+import { NestFastifyApplication } from '@nestjs/platform-fastify';
+import * as yaml from 'js-yaml';
+
+import {
+  createTestApp,
+  multipartBody,
+  registerAndLogin,
+} from './utils/test-app';
 
 /**
- * End-to-end test for text-format conversion.
- *
- * Requires a running PostgreSQL and applied migrations (`npm run migration:run`),
- * like the user-management e2e. Exercises the real Fastify kernel via
- * light-my-request (`app.inject`) with hand-built multipart bodies.
+ * End-to-end test for text-format conversion: real multipart streaming,
+ * worker threads, and temp files on disk.
  */
-const BOUNDARY = '----e2econvertboundary';
-
-function multipartBody(file: {
-  filename: string;
-  content: string;
-  targetFormat: string;
-}): { body: string; headers: Record<string, string> } {
-  const body =
-    `--${BOUNDARY}\r\n` +
-    `Content-Disposition: form-data; name="targetFormat"\r\n\r\n` +
-    `${file.targetFormat}\r\n` +
-    `--${BOUNDARY}\r\n` +
-    `Content-Disposition: form-data; name="file"; filename="${file.filename}"\r\n` +
-    `Content-Type: application/octet-stream\r\n\r\n` +
-    `${file.content}\r\n` +
-    `--${BOUNDARY}--\r\n`;
-  return {
-    body,
-    headers: { 'content-type': `multipart/form-data; boundary=${BOUNDARY}` },
-  };
-}
-
 describe('Text-format conversion (e2e)', () => {
   let app: NestFastifyApplication;
   let accessToken: string;
-  const email = `e2e-convert+${Date.now()}@example.com`;
-  const password = 'password123';
 
   beforeAll(async () => {
-    initializeTransactionalContext({ storageDriver: StorageDriver.AUTO });
-
-    const moduleFixture: TestingModule = await Test.createTestingModule({
-      imports: [AppModule],
-    }).compile();
-
-    app = moduleFixture.createNestApplication<NestFastifyApplication>(
-      new FastifyAdapter(),
-    );
-    app.useGlobalPipes(
-      new ValidationPipe({
-        whitelist: true,
-        transform: true,
-        transformOptions: { enableImplicitConversion: true },
-      }),
-    );
-    await app.register(fastifyCookie, { secret: 'test-secret' });
-    await app.register(fastifyMultipart, {
-      limits: { files: 1, fileSize: 5_242_880 },
-    });
-    await app.init();
-    await app.getHttpAdapter().getInstance().ready();
-
-    await app.inject({
-      method: 'POST',
-      url: '/auth/register',
-      payload: { email, password },
-    });
-    const login = await app.inject({
-      method: 'POST',
-      url: '/auth/login',
-      payload: { email, password },
-    });
-    accessToken = login.cookies.find((c) => c.name === 'access_token')!.value;
+    app = await createTestApp();
+    accessToken = (await registerAndLogin(app, 'e2e-convert')).access_token;
   });
 
   afterAll(async () => {
     await app?.close();
   });
 
-  it('requires authentication', async () => {
-    const { body, headers } = multipartBody({
-      filename: 'data.json',
-      content: '{"a":1}',
-      targetFormat: 'yaml',
-    });
-    const res = await app.inject({
+  const convert = (
+    fields: Parameters<typeof multipartBody>[0],
+    authenticated = true,
+  ) => {
+    const { payload, headers } = multipartBody(fields);
+    return app.inject({
       method: 'POST',
       url: '/api/convert',
       headers,
-      payload: body,
+      payload,
+      ...(authenticated ? { cookies: { access_token: accessToken } } : {}),
     });
+  };
+
+  it('requires authentication', async () => {
+    const res = await convert(
+      { filename: 'data.json', content: '{"a":1}', targetFormat: 'yaml' },
+      false,
+    );
     expect(res.statusCode).toBe(401);
   });
 
   it('converts JSON to YAML', async () => {
-    const { body, headers } = multipartBody({
+    const res = await convert({
       filename: 'data.json',
       content: '{"name":"Ann","age":30}',
       targetFormat: 'yaml',
     });
-    const res = await app.inject({
-      method: 'POST',
-      url: '/api/convert',
-      headers,
-      cookies: { access_token: accessToken },
-      payload: body,
-    });
     expect(res.statusCode).toBe(200);
-    expect(res.headers['content-disposition']).toContain('converted.yaml');
+    expect(res.headers['content-type']).toBe('application/yaml; charset=utf-8');
+    expect(res.headers['content-disposition']).toBe(
+      'attachment; filename="converted.yaml"',
+    );
     expect(res.body).toContain('name: Ann');
   });
 
   it('converts CSV to JSON', async () => {
-    const { body, headers } = multipartBody({
+    const res = await convert({
       filename: 'data.csv',
       content: 'name,age\nAnn,30\n',
       targetFormat: 'json',
-    });
-    const res = await app.inject({
-      method: 'POST',
-      url: '/api/convert',
-      headers,
-      cookies: { access_token: accessToken },
-      payload: body,
     });
     expect(res.statusCode).toBe(200);
     expect(res.json()).toEqual([{ name: 'Ann', age: '30' }]);
   });
 
-  it('rejects a malformed file with 400', async () => {
-    const { body, headers } = multipartBody({
-      filename: 'data.json',
-      content: '{bad',
-      targetFormat: 'yaml',
+  it('converts a real-world YAML document to JSON', async () => {
+    const content = readFileSync(join(__dirname, 'fixtures', 'invoice.yaml'));
+    const res = await convert({
+      filename: 'invoice.yaml',
+      content,
+      targetFormat: 'json',
     });
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toEqual(
+      JSON.parse(JSON.stringify(yaml.load(content.toString('utf8')))),
+    );
+  });
+
+  it('converts XML records to CSV', async () => {
+    const res = await convert({
+      filename: 'people.xml',
+      content:
+        '<people><person><name>Ann</name><age>30</age></person><person><name>Bob</name><age>25</age></person></people>',
+      targetFormat: 'csv',
+    });
+    expect(res.statusCode).toBe(200);
+    expect(res.body).toBe('name,age\nAnn,30\nBob,25\n');
+  });
+
+  it('streams a multi-megabyte CSV through the workers', async () => {
+    const rows = Array.from(
+      { length: 60_000 },
+      (_, i) => `${i},user-${i}@example.com,"Name, ${i}"`,
+    );
+    const content = `id,email,name\n${rows.join('\n')}\n`;
+    expect(Buffer.byteLength(content)).toBeGreaterThan(2_000_000);
+
+    const res = await convert({
+      filename: 'big.csv',
+      content,
+      targetFormat: 'json',
+    });
+    expect(res.statusCode).toBe(200);
+    const json = res.json<Array<Record<string, string>>>();
+    expect(json).toHaveLength(60_000);
+    expect(json[59_999]).toEqual({
+      id: '59999',
+      email: 'user-59999@example.com',
+      name: 'Name, 59999',
+    });
+  });
+
+  it('accepts the target format after the file part', async () => {
+    const { payload, headers } = multipartBody({
+      filename: 'data.json',
+      content: '{"a":1}',
+    });
+    const tail = Buffer.from(
+      '--' +
+        headers['content-type'].split('boundary=')[1] +
+        '\r\nContent-Disposition: form-data; name="targetFormat"\r\n\r\nxml\r\n',
+    );
+    // Insert the field before the closing boundary.
+    const closing = payload.lastIndexOf(
+      '--' + headers['content-type'].split('boundary=')[1] + '--',
+    );
+    const body = Buffer.concat([
+      payload.subarray(0, closing),
+      tail,
+      payload.subarray(closing),
+    ]);
     const res = await app.inject({
       method: 'POST',
       url: '/api/convert',
       headers,
-      cookies: { access_token: accessToken },
       payload: body,
+      cookies: { access_token: accessToken },
     });
-    expect(res.statusCode).toBe(400);
+    expect(res.statusCode).toBe(200);
+    expect(res.body).toContain('<a>1</a>');
+  });
+
+  it.each([
+    ['malformed JSON', 'data.json', '{bad', 400],
+    ['invalid UTF-8', 'data.json', Buffer.from([0x22, 0xff, 0x22]), 400],
+    [
+      'an XML DOCTYPE',
+      'data.xml',
+      '<!DOCTYPE x [<!ENTITY e "x">]><r>&e;</r>',
+      400,
+    ],
+    ['an empty file', 'data.json', '', 400],
+    ['an unsupported extension', 'notes.txt', 'hello', 415],
+  ])('rejects %s', async (_label, filename, content, status) => {
+    const res = await convert({ filename, content, targetFormat: 'yaml' });
+    expect(res.statusCode).toBe(status);
+  });
+
+  it('rejects a file over the per-format size limit with 413', async () => {
+    const limit = Number(process.env.CONVERT_MAX_SIZE_JSON ?? 5_242_880);
+    const res = await convert({
+      filename: 'data.json',
+      content: Buffer.alloc(limit + 1, 0x20),
+      targetFormat: 'yaml',
+    });
+    expect(res.statusCode).toBe(413);
   });
 
   it('lists 12 supported conversion directions', async () => {

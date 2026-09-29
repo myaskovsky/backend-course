@@ -20,7 +20,7 @@ import {
 import { Throttle } from '@nestjs/throttler';
 import type { FastifyReply, FastifyRequest } from 'fastify';
 
-import { REFRESH_TOKEN_COOKIE } from './auth.constants';
+import { ACCESS_TOKEN_COOKIE, REFRESH_TOKEN_COOKIE } from './auth.constants';
 import type { RequestUser } from './auth.constants';
 import {
   AuthService,
@@ -141,14 +141,26 @@ export class AuthController {
     return { success: true };
   }
 
+  // Public so a client whose access token already expired can still revoke
+  // its refresh token. Only the tokens presented in the cookies are revoked.
+  @Public()
+  @Throttle({ default: { limit: 10, ttl: 60_000 } })
   @Post('logout')
   @HttpCode(HttpStatus.OK)
   @ApiCookieAuth('access_token')
-  @ApiOperation({ summary: 'Log out by clearing auth cookies' })
-  @ApiOkResponse({ description: 'Logged out; auth cookies cleared.' })
-  @ApiUnauthorizedResponse({ description: 'Not authenticated.' })
-  logout(@Res({ passthrough: true }) reply: FastifyReply): { success: true } {
-    // No server-side refresh storage (per spec) — logout simply clears cookies.
+  @ApiOperation({
+    summary:
+      'Log out: revoke the current access/refresh tokens and clear cookies',
+  })
+  @ApiOkResponse({ description: 'Tokens revoked; auth cookies cleared.' })
+  async logout(
+    @Req() request: FastifyRequest & { cookies?: Record<string, string> },
+    @Res({ passthrough: true }) reply: FastifyReply,
+  ): Promise<{ success: true }> {
+    await this.authService.logout(
+      request.cookies?.[ACCESS_TOKEN_COOKIE],
+      request.cookies?.[REFRESH_TOKEN_COOKIE],
+    );
     this.cookieService.clearAuthCookies(reply);
     return { success: true };
   }
@@ -192,7 +204,10 @@ export class AuthController {
   @Post('change-password')
   @HttpCode(HttpStatus.OK)
   @ApiCookieAuth('access_token')
-  @ApiOperation({ summary: 'Change the password of the authenticated user' })
+  @ApiOperation({
+    summary:
+      'Change the password; revokes all other sessions and re-issues cookies',
+  })
   @ApiOkResponse({ description: 'Password changed successfully.' })
   @ApiUnauthorizedResponse({
     description: 'Not authenticated or current password incorrect.',
@@ -200,8 +215,10 @@ export class AuthController {
   async changePassword(
     @Body() dto: ChangePasswordDto,
     @CurrentUser() actor: RequestUser,
+    @Res({ passthrough: true }) reply: FastifyReply,
   ): Promise<{ success: true }> {
-    await this.authService.changePassword(actor.userId, dto);
+    const tokens = await this.authService.changePassword(actor.userId, dto);
+    this.cookieService.setAuthCookies(reply, tokens);
     return { success: true };
   }
 

@@ -8,6 +8,8 @@ describe('HealthService', () => {
   const pingCheck = jest.fn().mockResolvedValue({ database: { status: 'up' } });
 
   beforeEach(async () => {
+    check.mockClear();
+    pingCheck.mockClear();
     const module: TestingModule = await Test.createTestingModule({
       providers: [
         HealthService,
@@ -21,6 +23,11 @@ describe('HealthService', () => {
 
   it('should be defined', () => {
     expect(service).toBeDefined();
+  });
+
+  it('getEmptyResponse returns an ok status with no details', () => {
+    expect(service.getEmptyResponse()).toEqual({ status: 'ok', details: {} });
+    expect(check).not.toHaveBeenCalled();
   });
 
   it('checkHealth runs a database ping check', async () => {

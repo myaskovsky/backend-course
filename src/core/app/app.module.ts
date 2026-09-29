@@ -5,11 +5,6 @@ import { DatabaseModule } from '@/core/database/database.module';
 import { HealthModule } from '@/core/health/health.module';
 import { ThrottlerModule } from '@/core/throttler/throttler.module';
 
-/**
- *
- * Application modules
- *
- */
 import { AuthModule } from '@/modules/auth/auth.module';
 import { ConversionsModule } from '@/modules/conversions/conversions.module';
 import { RbacModule } from '@/modules/rbac/rbac.module';
@@ -22,11 +17,6 @@ import { UsersModule } from '@/modules/users/users.module';
     DatabaseModule,
     HealthModule,
     ThrottlerModule,
-    /**
-     *
-     * Application modules
-     *
-     */
     UsersModule,
     AuthModule,
     RbacModule,

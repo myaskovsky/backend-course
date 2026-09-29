@@ -12,7 +12,9 @@ import { UsersService } from '@/modules/users/users.service';
 import { AuthService } from './auth.service';
 import { ChallengeService } from './challenge.service';
 import { ChallengeType } from './entities/email-challenge.entity';
+import { JwtPayload } from './auth.constants';
 import { PasswordService } from './password.service';
+import { TokenRevocationService } from './token-revocation.service';
 import { TokensService } from './tokens.service';
 
 jest.mock('typeorm-transactional', () => ({
@@ -32,11 +34,15 @@ describe('AuthService', () => {
       | 'markLoggedIn'
       | 'activate'
       | 'setPassword'
+      | 'revokeAllSessions'
     >
+  >;
+  let tokenRevocation: jest.Mocked<
+    Pick<TokenRevocationService, 'revoke' | 'isRevokedForUser'>
   >;
   let passwordService: jest.Mocked<Pick<PasswordService, 'hash' | 'verify'>>;
   let tokensService: jest.Mocked<
-    Pick<TokensService, 'issueTokenPair' | 'verifyRefresh'>
+    Pick<TokensService, 'issueTokenPair' | 'verifyRefresh' | 'verifyAccess'>
   >;
   let challengeService: jest.Mocked<
     Pick<
@@ -56,12 +62,22 @@ describe('AuthService', () => {
       displayName: null,
       lastLoginAt: null,
       deletedAt: null,
+      tokensValidAfter: null,
       createdAt: new Date('2026-01-01T00:00:00Z'),
       updatedAt: new Date('2026-01-01T00:00:00Z'),
       ...overrides,
     }) as User;
 
   const tokenPair = { accessToken: 'a', refreshToken: 'r' };
+  const payload = (overrides: Partial<JwtPayload> = {}): JwtPayload => ({
+    sub: 'user-1',
+    email: 'user@example.com',
+    type: 'refresh',
+    jti: 'jti-1',
+    iat: 1_700_000_000,
+    exp: 1_800_000_000,
+    ...overrides,
+  });
 
   beforeEach(async () => {
     configValues = {
@@ -78,6 +94,11 @@ describe('AuthService', () => {
       markLoggedIn: jest.fn().mockResolvedValue(undefined),
       activate: jest.fn().mockResolvedValue(undefined),
       setPassword: jest.fn().mockResolvedValue(undefined),
+      revokeAllSessions: jest.fn().mockResolvedValue(undefined),
+    };
+    tokenRevocation = {
+      revoke: jest.fn().mockResolvedValue(true),
+      isRevokedForUser: jest.fn().mockReturnValue(false),
     };
     passwordService = {
       hash: jest.fn().mockResolvedValue('hashed'),
@@ -86,6 +107,7 @@ describe('AuthService', () => {
     tokensService = {
       issueTokenPair: jest.fn().mockResolvedValue(tokenPair),
       verifyRefresh: jest.fn(),
+      verifyAccess: jest.fn(),
     };
     challengeService = {
       issue: jest.fn().mockResolvedValue({ challengeId: 'ch-1' }),
@@ -100,6 +122,7 @@ describe('AuthService', () => {
         { provide: UsersService, useValue: usersService },
         { provide: PasswordService, useValue: passwordService },
         { provide: TokensService, useValue: tokensService },
+        { provide: TokenRevocationService, useValue: tokenRevocation },
         { provide: ChallengeService, useValue: challengeService },
         {
           provide: ConfigService,
@@ -231,17 +254,54 @@ describe('AuthService', () => {
   });
 
   describe('refresh', () => {
-    it('rotates the token pair for a valid refresh token', async () => {
-      tokensService.verifyRefresh.mockResolvedValue({
-        sub: 'user-1',
-        email: 'user@example.com',
-        type: 'refresh',
-      });
+    it('rotates the pair and revokes the used refresh token', async () => {
+      tokensService.verifyRefresh.mockResolvedValue(payload());
       usersService.findById.mockResolvedValue(buildUser());
 
       const result = await service.refresh('valid-refresh');
 
       expect(result).toEqual(tokenPair);
+      expect(tokenRevocation.revoke).toHaveBeenCalledWith(payload());
+    });
+
+    it('rejects a refresh token revoked by a revoke-all', async () => {
+      tokensService.verifyRefresh.mockResolvedValue(payload());
+      usersService.findById.mockResolvedValue(buildUser());
+      tokenRevocation.isRevokedForUser.mockReturnValue(true);
+
+      await expect(service.refresh('old')).rejects.toBeInstanceOf(
+        UnauthorizedException,
+      );
+      expect(tokensService.issueTokenPair).not.toHaveBeenCalled();
+    });
+
+    it('treats a replayed refresh token as theft and revokes all sessions', async () => {
+      tokensService.verifyRefresh.mockResolvedValue(payload());
+      usersService.findById.mockResolvedValue(buildUser());
+      tokenRevocation.revoke.mockResolvedValue(false);
+
+      await expect(service.refresh('replayed')).rejects.toBeInstanceOf(
+        UnauthorizedException,
+      );
+      expect(usersService.revokeAllSessions).toHaveBeenCalledWith('user-1');
+      expect(tokensService.issueTokenPair).not.toHaveBeenCalled();
+    });
+
+    it('rejects a refresh token with a bad signature', async () => {
+      tokensService.verifyRefresh.mockRejectedValue(new Error('bad'));
+      await expect(service.refresh('forged')).rejects.toBeInstanceOf(
+        UnauthorizedException,
+      );
+    });
+
+    it('rejects a refresh token of an inactive user', async () => {
+      tokensService.verifyRefresh.mockResolvedValue(payload());
+      usersService.findById.mockResolvedValue(
+        buildUser({ status: UserStatus.BLOCKED }),
+      );
+      await expect(service.refresh('r')).rejects.toBeInstanceOf(
+        UnauthorizedException,
+      );
     });
 
     it('rejects a missing refresh token', async () => {
@@ -251,15 +311,34 @@ describe('AuthService', () => {
     });
 
     it('rejects an access token presented at the refresh endpoint', async () => {
-      tokensService.verifyRefresh.mockResolvedValue({
-        sub: 'user-1',
-        email: 'user@example.com',
-        type: 'access',
-      });
+      tokensService.verifyRefresh.mockResolvedValue(
+        payload({ type: 'access' }),
+      );
 
       await expect(service.refresh('access-token')).rejects.toBeInstanceOf(
         UnauthorizedException,
       );
+    });
+  });
+
+  describe('logout', () => {
+    it('revokes both presented tokens', async () => {
+      const access = payload({ type: 'access', jti: 'jti-a' });
+      const refresh = payload({ jti: 'jti-r' });
+      tokensService.verifyAccess.mockResolvedValue(access);
+      tokensService.verifyRefresh.mockResolvedValue(refresh);
+
+      await service.logout('a', 'r');
+
+      expect(tokenRevocation.revoke).toHaveBeenCalledWith(access);
+      expect(tokenRevocation.revoke).toHaveBeenCalledWith(refresh);
+    });
+
+    it('skips tokens that are missing or fail verification', async () => {
+      tokensService.verifyRefresh.mockRejectedValue(new Error('expired'));
+
+      await expect(service.logout(undefined, 'r')).resolves.toBeUndefined();
+      expect(tokenRevocation.revoke).not.toHaveBeenCalled();
     });
   });
 
@@ -299,9 +378,9 @@ describe('AuthService', () => {
   });
 
   describe('changePassword', () => {
-    it('sets a new password after verifying the current one', async () => {
+    it('sets a new password and re-issues tokens for the current device', async () => {
       usersService.findByIdWithPassword.mockResolvedValue(buildUser());
-      await service.changePassword('user-1', {
+      const tokens = await service.changePassword('user-1', {
         currentPassword: 'password123',
         newPassword: 'newpassword123',
       });
@@ -310,6 +389,7 @@ describe('AuthService', () => {
         'password123',
       );
       expect(usersService.setPassword).toHaveBeenCalledWith('user-1', 'hashed');
+      expect(tokens).toEqual(tokenPair);
     });
 
     it('rejects a wrong current password with 400', async () => {

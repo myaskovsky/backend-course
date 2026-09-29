@@ -1,5 +1,6 @@
-import { randomUUID } from 'node:crypto';
 import { Readable } from 'node:stream';
+import { finished } from 'node:stream/promises';
+import { randomUUID } from 'node:crypto';
 
 import {
   BadRequestException,
@@ -14,11 +15,13 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 
 import { ConfigService } from '@/core/config/config.service';
-import { FileStorage } from '@/modules/storage/file-storage';
+import {
+  FileStorage,
+  StorageLimitExceededError,
+} from '@/modules/storage/file-storage';
 
-import { assertWithinDepth } from './codecs/depth-guard';
 import { CodecError } from './codecs/codec-error';
-import { CodecRegistry } from './codecs/codec.registry';
+import { ConversionWorkerPool } from './conversion-worker.pool';
 import {
   ConversionErrorCode,
   CONTENT_TYPES,
@@ -36,13 +39,25 @@ import {
   TransformationType,
 } from './entities/transformation-history.entity';
 
+/**
+ * An upload streamed to a temp file (see `stageUpload`). `source` is undefined
+ * when the filename has no supported extension; `tooLarge` when the upload
+ * exceeded the limit of its source format (nothing is kept on disk then).
+ */
+export interface StagedUpload {
+  filename: string;
+  source?: TextFormat;
+  path?: string;
+  size: number;
+  tooLarge?: boolean;
+}
+
 export interface ConvertInput {
   userId: string;
-  /** Original upload filename (used for source-format detection). */
-  filename: string | undefined;
   /** Raw `targetFormat` field value from the multipart body. */
   targetFormatRaw: string | undefined;
-  buffer: Buffer;
+  /** The uploaded file, or undefined when the request carried none. */
+  upload: StagedUpload | undefined;
   /** When true, persist the result file to storage for later download. */
   save?: boolean;
 }
@@ -60,9 +75,9 @@ export class ConversionsService {
   constructor(
     @InjectRepository(TransformationHistory)
     private readonly historyRepo: Repository<TransformationHistory>,
-    private readonly registry: CodecRegistry,
     private readonly configService: ConfigService,
     private readonly storage: FileStorage,
+    private readonly workers: ConversionWorkerPool,
   ) {}
 
   /** All 12 supported source→target directions. */
@@ -73,110 +88,137 @@ export class ConversionsService {
     }));
   }
 
-  async convert(input: ConvertInput): Promise<ConvertResult> {
-    const fileSize = input.buffer.length;
-
-    // Request-shape validation (no history recorded — the request never named a
-    // valid transformation).
-    const target = this.parseTargetFormat(input.targetFormatRaw);
-    const source = this.detectSourceFormat(input.filename);
-
-    const started = Date.now();
+  /**
+   * Streams an uploaded file to a temp file, enforcing the size limit of its
+   * source format while the bytes arrive — the upload is never held in memory.
+   * The stream is always fully consumed, so the multipart parser can move on
+   * to the fields that follow the file.
+   */
+  async stageUpload(filename: string, file: Readable): Promise<StagedUpload> {
+    const source = this.detectSourceFormat(filename);
+    if (!source) {
+      await drain(file);
+      return { filename, size: 0 };
+    }
+    const limit = this.sizeLimit(source);
     try {
-      this.assertNotEmpty(input.buffer);
-      this.assertWithinSizeLimit(source, fileSize);
-      this.assertSupportedPair(source, target);
-
-      const output = this.transform(source, target, input.buffer, started);
-      const buffer = Buffer.from(output, 'utf8');
-      const durationMs = Date.now() - started;
-
-      // Saving is best-effort and never changes the conversion response: the
-      // client always gets its converted file, even if persistence is skipped
-      // (oversize) or fails (storage error). See the requirement note in 1.3.1.
-      const saved = input.save ? await this.trySave(buffer) : null;
-
-      await this.record(input.userId, source, target, {
-        status: TransformationStatus.SUCCESS,
-        errorCode: null,
-        fileSize,
-        durationMs,
-        fileId: saved?.fileId ?? null,
-        resultSize: saved?.size ?? null,
-        expiresAt: this.computeExpiry(),
-      });
-      this.audit(
-        input.userId,
-        source,
-        target,
-        fileSize,
-        durationMs,
-        saved ? `success saved fileId=${saved.fileId}` : 'success',
-      );
-
-      return {
-        stream: Readable.from(buffer),
-        contentType: CONTENT_TYPES[target],
-        filename: `converted.${EXTENSIONS[target]}`,
-      };
+      const temp = await this.storage.writeTemp(file, limit);
+      return { filename, source, path: temp.path, size: temp.size };
     } catch (err) {
-      const durationMs = Date.now() - started;
-      const code =
-        err instanceof CodecError
-          ? err.code
-          : ConversionErrorCode.INVALID_SYNTAX;
-
-      await this.record(input.userId, source, target, {
-        status: TransformationStatus.ERROR,
-        errorCode: code,
-        fileSize,
-        durationMs,
-        fileId: null,
-        resultSize: null,
-        expiresAt: this.computeExpiry(),
-      });
-      this.audit(
-        input.userId,
-        source,
-        target,
-        fileSize,
-        durationMs,
-        `error:${code}`,
-      );
-      throw this.toHttp(err);
+      if (err instanceof StorageLimitExceededError) {
+        return { filename, source, size: limit + 1, tooLarge: true };
+      }
+      throw err;
     }
   }
 
-  // ---- transformation ----
-
-  private transform(
-    source: TextFormat,
-    target: TextFormat,
-    buffer: Buffer,
-    started: number,
-  ): string {
-    const text = this.decodeUtf8(buffer);
-    const ir = this.registry.get(source).parse(text);
-    assertWithinDepth(ir, this.maxDepth());
-    const output = this.registry.get(target).serialize(ir);
-
-    // Soft timeout: parsing is synchronous/CPU-bound so this cannot preempt an
-    // in-progress transform — the per-format size limit and depth guard are the
-    // real resource-attack defenses. This records/enforces the boundary after
-    // the fact for observability and to fail unusually slow conversions.
-    if (Date.now() - started > this.timeoutMs()) {
-      throw new CodecError(
-        ConversionErrorCode.TIMEOUT,
-        'Conversion exceeded the time limit',
-      );
+  /** Discards a staged upload (e.g. when the request fails before `convert`). */
+  async discard(upload: StagedUpload | undefined): Promise<void> {
+    if (upload?.path) {
+      await this.storage.removeTemp(upload.path);
     }
-    return output;
   }
 
-  /** Decodes UTF-8 and strips a leading BOM. */
-  private decodeUtf8(buffer: Buffer): string {
-    const text = buffer.toString('utf8');
-    return text.charCodeAt(0) === 0xfeff ? text.slice(1) : text;
+  async convert(input: ConvertInput): Promise<ConvertResult> {
+    const { upload } = input;
+    let outputPath: string | undefined;
+    try {
+      // Request-shape validation (no history recorded — the request never
+      // named a valid transformation).
+      const target = this.parseTargetFormat(input.targetFormatRaw);
+      const source = upload?.source;
+      if (!source) {
+        throw new UnsupportedMediaTypeException(
+          `Unsupported or undetectable source format for file "${upload?.filename ?? ''}"`,
+        );
+      }
+
+      const fileSize = upload.size;
+      const started = Date.now();
+      try {
+        this.assertWithinSizeLimit(source, upload);
+        this.assertNotEmpty(upload);
+        this.assertSupportedPair(source, target);
+
+        outputPath = await this.storage.createTempPath();
+        const outcome = await this.workers.run({
+          inputPath: upload.path!,
+          outputPath,
+          source,
+          target,
+          maxDepth: Number(this.configService.get('CONVERT_MAX_DEPTH')),
+        });
+        if (!outcome.ok) {
+          throw new CodecError(outcome.code, outcome.message);
+        }
+        const durationMs = Date.now() - started;
+
+        // Saving is best-effort and never changes the conversion response.
+        const saved = input.save
+          ? await this.trySave(outputPath, outcome.resultSize)
+          : null;
+
+        await this.record(input.userId, source, target, {
+          status: TransformationStatus.SUCCESS,
+          errorCode: null,
+          fileSize,
+          durationMs,
+          fileId: saved?.fileId ?? null,
+          resultSize: saved ? outcome.resultSize : null,
+          expiresAt: this.computeExpiry(),
+        });
+        this.audit(
+          input.userId,
+          source,
+          target,
+          fileSize,
+          durationMs,
+          saved ? `success saved fileId=${saved.fileId}` : 'success',
+        );
+
+        // The result is complete on disk before the first byte is sent, so a
+        // failed conversion can never produce a partial download.
+        const stream = saved
+          ? this.storage.createReadStream(saved.fileId)
+          : this.storage.createTempReadStream(outputPath);
+        outputPath = undefined; // now owned by the stream / storage
+        return {
+          stream,
+          contentType: CONTENT_TYPES[target],
+          filename: `converted.${EXTENSIONS[target]}`,
+        };
+      } catch (err) {
+        const durationMs = Date.now() - started;
+        const code =
+          err instanceof CodecError
+            ? err.code
+            : ConversionErrorCode.INVALID_SYNTAX;
+
+        await this.record(input.userId, source, target, {
+          status: TransformationStatus.ERROR,
+          errorCode: code,
+          fileSize,
+          durationMs,
+          fileId: null,
+          resultSize: null,
+          expiresAt: this.computeExpiry(),
+        });
+        this.audit(
+          input.userId,
+          source,
+          target,
+          fileSize,
+          durationMs,
+          `error:${code}`,
+        );
+        throw this.toHttp(err);
+      }
+    } finally {
+      await this.discard(upload);
+      if (outputPath) {
+        await this.storage.removeTemp(outputPath);
+      }
+    }
   }
 
   // ---- validation ----
@@ -194,31 +236,29 @@ export class ConversionsService {
     return value as TextFormat;
   }
 
-  private detectSourceFormat(filename: string | undefined): TextFormat {
-    const ext = filename?.includes('.')
-      ? filename.split('.').pop()!
-      : undefined;
-    const format = ext ? formatFromExtension(ext) : undefined;
-    if (!format) {
-      throw new UnsupportedMediaTypeException(
-        `Unsupported or undetectable source format for file "${filename ?? ''}"`,
-      );
-    }
-    return format;
+  private detectSourceFormat(filename: string): TextFormat | undefined {
+    const ext = filename.includes('.') ? filename.split('.').pop()! : '';
+    return ext ? formatFromExtension(ext) : undefined;
   }
 
-  private assertNotEmpty(buffer: Buffer): void {
-    if (buffer.length === 0) {
+  private sizeLimit(source: TextFormat): number {
+    return Number(this.configService.get(SIZE_LIMIT_CONFIG_KEY[source]));
+  }
+
+  private assertNotEmpty(upload: StagedUpload): void {
+    if (upload.size === 0) {
       throw new CodecError(ConversionErrorCode.EMPTY_FILE, 'File is empty');
     }
   }
 
-  private assertWithinSizeLimit(source: TextFormat, size: number): void {
-    const limit = Number(this.configService.get(SIZE_LIMIT_CONFIG_KEY[source]));
-    if (size > limit) {
+  private assertWithinSizeLimit(
+    source: TextFormat,
+    upload: StagedUpload,
+  ): void {
+    if (upload.tooLarge) {
       throw new CodecError(
         ConversionErrorCode.FILE_TOO_LARGE,
-        `File exceeds the ${source.toUpperCase()} size limit of ${limit} bytes`,
+        `File exceeds the ${source.toUpperCase()} size limit of ${this.sizeLimit(source)} bytes`,
       );
     }
   }
@@ -235,24 +275,25 @@ export class ConversionsService {
   // ---- persistence & mapping ----
 
   /**
-   * Persists the result to storage under a new fileId. Best-effort: returns null
-   * (and logs) when the result exceeds the save-size limit or the storage write
+   * Moves the result into storage under a new fileId. Best-effort: returns
+   * null (and logs) when the result exceeds the save-size limit or the move
    * fails, so the conversion response is unaffected.
    */
   private async trySave(
-    buffer: Buffer,
-  ): Promise<{ fileId: string; size: number } | null> {
+    outputPath: string,
+    size: number,
+  ): Promise<{ fileId: string } | null> {
     const max = Number(this.configService.get('CONVERT_MAX_SAVE_SIZE'));
-    if (buffer.length > max) {
+    if (size > max) {
       this.logger.warn(
-        `Result not saved: ${buffer.length} bytes exceeds CONVERT_MAX_SAVE_SIZE (${max})`,
+        `Result not saved: ${size} bytes exceeds CONVERT_MAX_SAVE_SIZE (${max})`,
       );
       return null;
     }
     const fileId = randomUUID();
     try {
-      await this.storage.save(fileId, buffer);
-      return { fileId, size: buffer.length };
+      await this.storage.moveIn(outputPath, fileId);
+      return { fileId };
     } catch (err) {
       this.logger.error(`Failed to save result file: ${String(err)}`);
       return null;
@@ -320,12 +361,13 @@ export class ConversionsService {
     this.logger.error(`Unexpected conversion failure: ${String(err)}`);
     return new BadRequestException('Conversion failed');
   }
+}
 
-  private maxDepth(): number {
-    return Number(this.configService.get('CONVERT_MAX_DEPTH'));
+/** Consumes and discards the rest of a stream. */
+async function drain(stream: Readable): Promise<void> {
+  if (stream.readableEnded || stream.destroyed) {
+    return;
   }
-
-  private timeoutMs(): number {
-    return Number(this.configService.get('CONVERT_TIMEOUT_MS'));
-  }
+  stream.resume();
+  await finished(stream).catch(() => undefined);
 }

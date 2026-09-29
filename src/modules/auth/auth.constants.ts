@@ -8,8 +8,12 @@ export interface JwtPayload {
   sub: string;
   email: string;
   type: TokenType;
-  /** roles are populated from RBAC (Phase 3); empty until then */
-  roles?: string[];
+  /** unique token id — the key of the revocation denylist */
+  jti: string;
+  /** issued-at, seconds since epoch (fractional — see TokensService) */
+  iat: number;
+  /** expiry, seconds since epoch */
+  exp: number;
 }
 
 /**

@@ -1,5 +1,6 @@
 import { Controller, Get, Query, UseGuards } from '@nestjs/common';
 import {
+  ApiBadRequestResponse,
   ApiCookieAuth,
   ApiForbiddenResponse,
   ApiOkResponse,
@@ -7,10 +8,13 @@ import {
   ApiTags,
 } from '@nestjs/swagger';
 
+import type { RequestUser } from '@/modules/auth/auth.constants';
+import { CurrentUser } from '@/modules/auth/decorators/current-user.decorator';
 import { RequirePermission } from '@/modules/rbac/decorators/require-permission.decorator';
 import { RbacGuard } from '@/modules/rbac/guards/rbac.guard';
 
 import { ListUsersQueryDto } from './dto/list-users-query.dto';
+import { PaginatedUsersDto } from './dto/paginated-users.dto';
 import { PaginatedUsers, UsersService } from './users.service';
 
 @ApiTags('admin-users')
@@ -23,9 +27,13 @@ export class AdminUsersController {
   @Get()
   @RequirePermission('users@list')
   @ApiOperation({ summary: 'List users with cursor pagination and filters' })
-  @ApiOkResponse({ description: 'A paginated list of users.' })
+  @ApiOkResponse({ type: PaginatedUsersDto })
+  @ApiBadRequestResponse({ description: 'Invalid query or cursor.' })
   @ApiForbiddenResponse({ description: 'Missing users@list permission.' })
-  list(@Query() query: ListUsersQueryDto): Promise<PaginatedUsers> {
-    return this.usersService.list(query);
+  list(
+    @Query() query: ListUsersQueryDto,
+    @CurrentUser() actor: RequestUser,
+  ): Promise<PaginatedUsers> {
+    return this.usersService.list(query, actor.userId);
   }
 }

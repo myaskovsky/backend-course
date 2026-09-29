@@ -1,4 +1,6 @@
-import { Config } from '@/core/config/config.types';
+// Type-only: this file is also loaded inside the conversion worker thread,
+// which runs outside Nest and without the `@/` path alias.
+import type { Config } from '../../core/config/config.types';
 
 /**
  * Supported text formats and their conversion matrix.
@@ -65,10 +67,9 @@ export const SIZE_LIMIT_CONFIG_KEY: Record<TextFormat, keyof Config> = {
 
 /** Stable machine-readable error codes recorded in transformation history. */
 export enum ConversionErrorCode {
-  UNSUPPORTED_SOURCE = 'unsupported_source',
-  UNSUPPORTED_TARGET = 'unsupported_target',
   UNSUPPORTED_PAIR = 'unsupported_pair',
   EMPTY_FILE = 'empty_file',
+  INVALID_ENCODING = 'invalid_encoding',
   FILE_TOO_LARGE = 'file_too_large',
   INVALID_SYNTAX = 'invalid_syntax',
   DEPTH_EXCEEDED = 'depth_exceeded',

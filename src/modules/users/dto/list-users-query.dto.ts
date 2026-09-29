@@ -25,29 +25,32 @@ export enum SortOrder {
 
 export class ListUsersQueryDto {
   @ApiPropertyOptional({
-    description: 'Opaque cursor for keyset pagination.',
-    example: 'eyJpZCI6IjEyMyJ9',
+    description:
+      'Opaque cursor from the previous page (`nextCursor`). Only valid with the same `sort` and `order`; a malformed or mismatched cursor returns 400.',
+    example: 'eyJ2IjoiMjAyNi0wMS0wMSIsImlkIjoiLi4uIn0',
   })
   @IsOptional()
   @IsString()
+  @MaxLength(1024)
   cursor?: string;
 
   @ApiPropertyOptional({
     description: 'Maximum number of users to return per page.',
     example: 20,
-    minimum: 20,
+    minimum: 1,
     maximum: 100,
     default: 20,
   })
   @IsOptional()
   @Type(() => Number)
   @IsInt()
-  @Min(20)
+  @Min(1)
   @Max(100)
   limit: number = 20;
 
   @ApiPropertyOptional({
-    description: 'Free-text search query (matches email/display name).',
+    description:
+      'Search string: case-insensitive substring of email or display name (wildcards are matched literally), or an exact user id.',
     example: 'jane',
     maxLength: 320,
   })
